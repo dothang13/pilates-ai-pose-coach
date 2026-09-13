@@ -1,0 +1,13 @@
+# Core Computer Vision & Pose Estimation
+opencv-python>=4.8.0
+numpy>=1.24.0,<3.0.0
+
+# Real-time Pose & Object Detection Engine (ONNX Runtime Backend)
+rtmlib>=0.0.16
+onnxruntime>=1.16.0
+
+# Optional: For GPU acceleration (uncomment if using NVIDIA CUDA)
+# onnxruntime-gpu>=1.16.0
+
+# Numerical & Kinematics Computation
+scipy>=1.10.0
