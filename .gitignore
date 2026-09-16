@@ -69,7 +69,9 @@ Desktop.ini
 logs/
 *.log
 
-# Temporary docs and scratch drafts
+# Personal draft docs & temporary scratch files (Local Only)
 temp_docs/
 scratch/
 *.docx
+*.pkl
+
