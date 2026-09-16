@@ -68,3 +68,9 @@ Desktop.ini
 # Output logs & benchmark recordings
 logs/
 *.log
+
+# Personal draft docs & temporary scratch files (Local Only)
+temp_docs/
+scratch/
+*.docx
+*.pkl
