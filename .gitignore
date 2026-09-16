@@ -68,3 +68,8 @@ Desktop.ini
 # Output logs & benchmark recordings
 logs/
 *.log
+
+# Temporary docs and scratch drafts
+temp_docs/
+scratch/
+*.docx
