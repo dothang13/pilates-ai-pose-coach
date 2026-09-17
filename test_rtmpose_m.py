@@ -27,10 +27,10 @@ KEYPOINT_NAMES = [
     "L_Wrist",      # 9
     "R_Wrist",      # 10
     "L_Hip",        # 11
-    "L_Knee",       # 12
-    "L_Ankle",      # 13
-    "R_Hip",        # 14
-    "R_Knee",       # 15
+    "R_Hip",       # 12
+    "L_Knee",      # 13
+    "R_Knee",        # 14
+    "L_Ankle",       # 15
     "R_Ankle"       # 16
 ]
 
@@ -107,7 +107,9 @@ def run_rtmpose_benchmark(source=0, mode='balanced', device='cpu', kpt_thr=0.4):
         # 1. Pipeline Inference: Detect human & predict 17 keypoints with SimCC
         # keypoints: ndarray (N, 17, 2), scores: ndarray (N, 17)
         keypoints, scores = body_estimator(frame)
-
+        print("keypoints shape:", keypoints.shape)
+        print("scores shape:", scores.shape)
+        print("first person:", keypoints[0])
         inf_time = time.time() - start_time
         curr_fps = 1.0 / inf_time if inf_time > 0 else 0
         fps_history.append(curr_fps)
@@ -168,6 +170,7 @@ def run_rtmpose_benchmark(source=0, mode='balanced', device='cpu', kpt_thr=0.4):
     cap.release()
     cv2.destroyAllWindows()
     print("[*] Benchmark terminated successfully.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pilates AI Pose Coach - RTMPose Real-time Test")
