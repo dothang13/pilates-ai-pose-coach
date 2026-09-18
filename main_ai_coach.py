@@ -51,21 +51,31 @@ def calculate_angle(p1, p2, p3):
     cosine = np.clip(cosine, -1.0, 1.0)
     return float(np.degrees(np.arccos(cosine)))
 
-def select_primary_user(keypoints, scores, frame_w, frame_h, kpt_thr=0.3):
+def select_primary_user(keypoints, scores, frame_w, frame_h, prev_center=None, kpt_thr=0.25):
     """
-    Intelligently selects the primary workout user when multiple people are detected.
+    Intelligently selects and locks onto the primary workout user when multiple people are detected.
     Prioritizes:
-      1. Bounding box area (user closest to camera is largest).
+      1. Spatial continuity with previous tracked user (Anti-hijack lock-on).
       2. Centrality (distance from horizontal center of the frame).
-    Returns (primary_kpts, primary_scores, person_idx)
+      3. Bounding box area (user closest to camera is largest).
+    Returns (primary_kpts, primary_scores, person_idx, user_center)
     """
     if keypoints is None or len(keypoints) == 0:
-        return None, None, -1
+        return None, None, -1, None
     if len(keypoints) == 1:
-        return keypoints[0], scores[0], 0
+        kpts = keypoints[0]
+        scs = scores[0]
+        valid_mask = scs > kpt_thr
+        if np.sum(valid_mask) >= 4:
+            valid_kpts = kpts[valid_mask]
+            user_cx = float(np.mean(valid_kpts[:, 0]))
+            user_cy = float(np.mean(valid_kpts[:, 1]))
+            return kpts, scs, 0, (user_cx, user_cy)
+        return kpts, scs, 0, None
 
     best_idx = 0
     best_rank = -1.0
+    best_center = None
     frame_cx = frame_w / 2.0
 
     for i in range(len(keypoints)):
@@ -81,17 +91,24 @@ def select_primary_user(keypoints, scores, frame_w, frame_h, kpt_thr=0.3):
 
         box_area = float((max_x - min_x) * (max_y - min_y))
         user_cx = float((min_x + max_x) / 2.0)
+        user_cy = float((min_y + max_y) / 2.0)
         dist_to_center = abs(user_cx - frame_cx) / (frame_cx + 1e-5)
-
-        # Centrality weight: 1.0 at dead center, 0.4 at edge
         centrality = max(0.4, 1.0 - 0.6 * dist_to_center)
-        rank_score = box_area * centrality
+
+        # Anti-hijack: Prioritize person near previous location
+        continuity = 1.0
+        if prev_center is not None:
+            spatial_dist = np.linalg.norm(np.array([user_cx, user_cy]) - np.array(prev_center))
+            continuity = max(0.3, 2.5 - (spatial_dist / (frame_w * 0.35 + 1e-5)))
+
+        rank_score = box_area * centrality * continuity
 
         if rank_score > best_rank:
             best_rank = rank_score
             best_idx = i
+            best_center = (user_cx, user_cy)
 
-    return keypoints[best_idx], scores[best_idx], best_idx
+    return keypoints[best_idx], scores[best_idx], best_idx, best_center
 
 def draw_hud(frame, exercise_name, state_text, reps_or_time, score, is_valid, error_msgs, fps, current_angle=None, num_persons=1):
     """
@@ -101,21 +118,24 @@ def draw_hud(frame, exercise_name, state_text, reps_or_time, score, is_valid, er
     overlay = frame.copy()
 
     # 1. Top Status Banner (Translucent Dark Slate)
-    cv2.rectangle(overlay, (15, 15), (420, 145), (15, 15, 20), -1)
+    cv2.rectangle(overlay, (15, 15), (460, 145), (15, 15, 20), -1)
     cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
 
     # Border color based on posture validity
     border_color = (0, 230, 115) if is_valid else (0, 60, 255)
-    cv2.rectangle(frame, (15, 15), (420, 145), border_color, 2)
+    cv2.rectangle(frame, (15, 15), (460, 145), border_color, 2)
 
     # Exercise & Phase Title
     cv2.putText(frame, f"{exercise_name.upper()} | {state_text}", (30, 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-    # Primary Metric (Rep Count / Time)
+    # Primary Metric (Rep Count / Time) - Auto font scale to prevent overflow
     metric_color = (0, 255, 127) if is_valid else (0, 200, 255)
-    cv2.putText(frame, f"{reps_or_time}", (30, 95),
-                cv2.FONT_HERSHEY_DUPLEX, 1.4, metric_color, 3)
+    metric_str = str(reps_or_time)
+    font_scale = 1.3 if len(metric_str) <= 12 else (1.0 if len(metric_str) <= 17 else 0.75)
+    thickness = 3 if font_scale >= 1.2 else 2
+    cv2.putText(frame, metric_str, (30, 95),
+                cv2.FONT_HERSHEY_DUPLEX, font_scale, metric_color, thickness)
 
     # Form Score, FPS & Multi-person status
     user_str = f" | Nguoi: 1/{num_persons}" if num_persons > 1 else ""
@@ -177,7 +197,7 @@ def run_ai_coach(source=0, exercise="squat", mode="balanced", device="cpu", kpt_
 
     # 2. Initialize Person B: Coaching Modules
     angle_filter = OneEuroFilter(min_cutoff=1.0, beta=0.007)
-    rep_fsm = RepetitionFSM(start_threshold=155.0, bottom_threshold=95.0, min_rep_duration=1.0)
+    rep_fsm = RepetitionFSM(start_threshold=150.0, bottom_threshold=105.0, min_rep_duration=0.5)
     hold_timer = HoldTimer()
     feedback_engine = FeedbackEngine(debounce_cooldown=2.5, enable_voice=True)
     ai_classifier = PostureErrorClassifier()
@@ -198,6 +218,7 @@ def run_ai_coach(source=0, exercise="squat", mode="balanced", device="cpu", kpt_
 
     fps_history = []
     prev_time = time.time()
+    prev_user_center = None
 
     print("[+] Camera stream started! Press 'q' to exit.\n")
 
@@ -229,97 +250,104 @@ def run_ai_coach(source=0, exercise="squat", mode="balanced", device="cpu", kpt_
         # -------------------------------------------------------------
         current_angle = None
         state_text = "STANDBY"
-        metric_display = "REPS: 0"
+        metric_display = f"REPS: {rep_fsm.rep_count}"
         is_form_valid = True
         error_msgs = []
         form_score = 100
 
         if num_persons > 0:
             h_f, w_f, _ = frame.shape
-            user_kpts, user_scores, active_idx = select_primary_user(keypoints, scores, w_f, h_f, kpt_thr=kpt_thr)
+            user_kpts, user_scores, active_idx, user_center = select_primary_user(
+                keypoints, scores, w_f, h_f, prev_center=prev_user_center, kpt_thr=0.25
+            )
+            if user_center is not None:
+                prev_user_center = user_center
 
             if user_kpts is None:
                 continue
 
             # If multiple persons detected, draw lock tag above primary user's head
-            if num_persons > 1 and user_scores[0] > kpt_thr:
+            if num_persons > 1 and user_scores[0] > 0.2:
                 nose_x, nose_y = int(user_kpts[0][0]), int(user_kpts[0][1])
                 cv2.putText(vis_frame, "NGUOI CHINH [LOCKED]", (max(10, nose_x - 75), max(25, nose_y - 25)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 127), 2)
                 cv2.circle(vis_frame, (nose_x, nose_y), 6, (0, 255, 127), -1)
 
-            # Check if lower body (Hips & Knees) is actually visible in camera frame
-            has_hips = (user_scores[11] > kpt_thr or user_scores[12] > kpt_thr)
-            has_knees = (user_scores[13] > kpt_thr or user_scores[14] > kpt_thr)
-            is_full_body_visible = has_hips and has_knees
+            # Calculate joint angles directly from user keypoints
+            l_conf = (user_scores[11] + user_scores[13] + user_scores[15]) / 3.0
+            r_conf = (user_scores[12] + user_scores[14] + user_scores[16]) / 3.0
 
-            if not is_full_body_visible:
-                state_text = "LUI RA XA (2M)"
-                metric_display = "CHO TOAN THAN"
+            if l_conf > r_conf and l_conf > 0.15:
+                raw_knee = calculate_angle(user_kpts[11], user_kpts[13], user_kpts[15])
+                raw_hip = calculate_angle(user_kpts[5], user_kpts[11], user_kpts[13])
+            elif r_conf > 0.15:
+                raw_knee = calculate_angle(user_kpts[12], user_kpts[14], user_kpts[16])
+                raw_hip = calculate_angle(user_kpts[6], user_kpts[12], user_kpts[14])
+            else:
+                raw_knee, raw_hip = 180.0, 180.0
+
+            # Step 1: Smooth knee angle
+            smooth_knee = angle_filter.update(raw_knee, curr_time)
+            current_angle = smooth_knee
+
+            # Step 2: FSM Rep Counter / Timer
+            ex_cfg = EXERCISE_CONFIGS.get(exercise.lower(), {})
+            if ex_cfg.get("type") == "REPETITION":
+                state, reps, meta = rep_fsm.update(smooth_knee, curr_time)
+                state_text = state.value
+                if meta.get("is_seated"):
+                    state_text = "RESTING"
+                    metric_display = f"REPS: {reps} [NGHI]"
+                else:
+                    metric_display = f"REPS: {reps} ({int(smooth_knee)} deg)"
+
+                # Trigger encouraging studio voice when rep finishes
+                if meta.get("rep_completed"):
+                    feedback_engine.notify_rep_completed(reps, curr_time)
+            else:
+                # Isometric hold (e.g. Plank)
+                hold_sec = hold_timer.update(is_form_valid, curr_time)
+                state_text = "HOLDING" if hold_timer.is_holding else "PAUSED"
+                metric_display = f"TIME: {int(hold_sec)}s"
+
+            # Step 3: Biomechanical Form Evaluation (Phase-Aware)
+            shoulder_mid = (user_kpts[5] + user_kpts[6]) / 2.0
+            hip_mid = (user_kpts[11] + user_kpts[12]) / 2.0
+            torso_dx = shoulder_mid[0] - hip_mid[0]
+            torso_dy = hip_mid[1] - shoulder_mid[1]
+            torso_lean = float(np.degrees(np.arctan2(torso_dy, abs(torso_dx) + 1e-5)))
+
+            angles_dict = {
+                "knee_angle": smooth_knee,
+                "lowest_knee_angle": meta.get("lowest_angle", smooth_knee),
+                "depth_error": meta.get("depth_error", False),
+                "hip_angle": raw_hip,
+                "torso_angle": torso_lean,
+                "knee_distance": np.linalg.norm(user_kpts[13] - user_kpts[14]),
+                "ankle_distance": np.linalg.norm(user_kpts[15] - user_kpts[16])
+            }
+            
+            # If user is resting/seated, suppress posture errors
+            if meta.get("is_seated"):
                 is_form_valid = True
-                error_msgs = ["Vui lòng lùi ra xa 2 mét để camera thấy từ đầu đến chân"]
+                error_msgs = []
                 form_score = 100
             else:
-                # Use most confident leg
-                l_conf = (user_scores[11] + user_scores[13] + user_scores[15]) / 3.0
-                r_conf = (user_scores[12] + user_scores[14] + user_scores[16]) / 3.0
-
-                if l_conf > r_conf and l_conf > kpt_thr:
-                    raw_knee = calculate_angle(user_kpts[11], user_kpts[13], user_kpts[15])
-                    raw_hip = calculate_angle(user_kpts[5], user_kpts[11], user_kpts[13])
-                elif r_conf > kpt_thr:
-                    raw_knee = calculate_angle(user_kpts[12], user_kpts[14], user_kpts[16])
-                    raw_hip = calculate_angle(user_kpts[6], user_kpts[12], user_kpts[14])
-                else:
-                    raw_knee, raw_hip = 180.0, 180.0
-
-                # Step 1: Smooth knee angle
-                smooth_knee = angle_filter.update(raw_knee, curr_time)
-                current_angle = smooth_knee
-
-                # Step 2: FSM Rep Counter / Timer
-                ex_cfg = EXERCISE_CONFIGS.get(exercise.lower(), {})
-                if ex_cfg.get("type") == "REPETITION":
-                    state, reps, meta = rep_fsm.update(smooth_knee, curr_time)
-                    state_text = state.value
-                    metric_display = f"REPS: {reps}"
-                else:
-                    # Isometric hold (e.g. Plank)
-                    hold_sec = hold_timer.update(is_form_valid, curr_time)
-                    state_text = "HOLDING" if hold_timer.is_holding else "PAUSED"
-                    metric_display = f"TIME: {int(hold_sec)}s"
-
-                # Step 3: Biomechanical Form Evaluation (Phase-Aware)
-                shoulder_mid = (user_kpts[5] + user_kpts[6]) / 2.0
-                hip_mid = (user_kpts[11] + user_kpts[12]) / 2.0
-                torso_dx = shoulder_mid[0] - hip_mid[0]
-                torso_dy = hip_mid[1] - shoulder_mid[1]
-                torso_lean = float(np.degrees(np.arctan2(torso_dy, abs(torso_dx) + 1e-5)))
-
-                angles_dict = {
-                    "knee_angle": smooth_knee,
-                    "hip_angle": raw_hip,
-                    "torso_angle": torso_lean,
-                    "knee_distance": np.linalg.norm(user_kpts[13] - user_kpts[14]),
-                    "ankle_distance": np.linalg.norm(user_kpts[15] - user_kpts[16])
-                }
-                
-                # Only check depth when user is in BOTTOM or ASCENDING phase
                 is_form_valid, error_msgs, form_score = evaluate_form_rules(exercise, angles_dict, phase=state_text)
 
-                # Step 4: Multi-label AI Model Prediction (only active during movement)
-                if ai_classifier.is_loaded and state_text in ["BOTTOM", "ASCENDING"]:
-                    feature_row = np.array([
-                        smooth_knee, smooth_knee, raw_hip, raw_hip,
-                        90.0, 90.0, torso_lean, torso_lean,
-                        0.08, 0.08
-                    ], dtype=np.float32)
-                    has_ai_err, ai_err_msgs, _ = ai_classifier.predict_errors(feature_row)
-                    if has_ai_err and not is_form_valid:
-                        error_msgs.extend(ai_err_msgs)
+            # Step 4: Multi-label AI Model Prediction (only active during movement)
+            if ai_classifier.is_loaded and state_text in ["BOTTOM", "ASCENDING"]:
+                feature_row = np.array([
+                    smooth_knee, smooth_knee, raw_hip, raw_hip,
+                    90.0, 90.0, torso_lean, torso_lean,
+                    0.08, 0.08
+                ], dtype=np.float32)
+                has_ai_err, ai_err_msgs, _ = ai_classifier.predict_errors(feature_row)
+                if has_ai_err and not is_form_valid:
+                    error_msgs.extend(ai_err_msgs)
 
-                # Step 5: Realtime Studio Voice Feedback Trigger
-                feedback_engine.process_feedback(is_form_valid, error_msgs, state_text, current_time=curr_time)
+            # Step 5: Realtime Studio Voice Feedback Trigger
+            feedback_engine.process_feedback(is_form_valid, error_msgs, state_text, current_time=curr_time)
 
         # 3. Render Professional HUD
         vis_frame = draw_hud(

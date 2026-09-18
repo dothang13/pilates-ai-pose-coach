@@ -17,7 +17,7 @@ EXERCISE_CONFIGS = {
         "rules": {
             "knee_depth": {
                 "desc": "Độ sâu khớp gối",
-                "check": lambda angles: angles.get("knee_angle", 180) <= 95.0,
+                "check": lambda angles: not angles.get("depth_error", False) and (angles.get("lowest_knee_angle", 180) <= 105.0),
                 "error_msg": "Chưa đủ độ sâu! Hãy hạ thấp mông hơn nữa."
             },
             "torso_lean": {
@@ -155,8 +155,9 @@ def evaluate_form_rules(exercise_key: str, angles: Dict[str, float], phase: str 
     passed_rules = 0
 
     for r_key, r_info in rules.items():
-        # Only check knee_depth if user is in BOTTOM or ASCENDING phase
-        if "depth" in r_key and phase not in ["BOTTOM", "ASCENDING"]:
+        # Only evaluate depth errors when user starts ASCENDING (or shallow reverse flagged)
+        # Never evaluate depth prematurely while descending or reaching bottom
+        if "depth" in r_key and phase not in ["ASCENDING", "COMPLETED"] and not angles.get("depth_error", False):
             continue
 
         total_rules += 1

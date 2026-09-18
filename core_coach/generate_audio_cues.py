@@ -29,7 +29,14 @@ AUDIO_CUES = {
     "squat_back_error": "Lưng đang bị gập quá mức! Hãy thẳng ngực lên.",
     "plank_hip_error": "Bụng đang bị xệ! Hãy xiết chặt cơ bụng.",
     "plank_piking_error": "Mông đang chổng quá cao! Hãy hạ người thẳng hàng.",
-    "bridge_hip_error": "Hông chưa nâng đủ cao! Hãy đẩy hông lên thẳng hàng."
+    "bridge_hip_error": "Hông chưa nâng đủ cao! Hãy đẩy hông lên thẳng hàng.",
+    "switch_squat": "Chuyển sang bài Squat.",
+    "switch_forward_lunge": "Chuyển sang bài Lunge.",
+    "switch_glute_bridge": "Chuyển sang bài Cầu mông.",
+    "switch_forearm_plank": "Chuyển sang bài Plank.",
+    "switch_pilates_hundred": "Chuyển sang bài Hundred.",
+    "switch_bird_dog": "Chuyển sang bài Bird Dog.",
+    "switch_side_leg_raise": "Chuyển sang bài Nâng chân ngang."
 }
 
 async def generate_all_cues():
