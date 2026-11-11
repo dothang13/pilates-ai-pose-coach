@@ -51,6 +51,95 @@ def calculate_angle(p1, p2, p3):
     cosine = np.clip(cosine, -1.0, 1.0)
     return float(np.degrees(np.arccos(cosine)))
 
+def extract_exercise_angles(exercise_name: str, user_kpts, user_scores) -> Tuple[float, Dict[str, float]]:
+    """
+    Dynamically extracts primary tracking angle and complete biomechanical angle dictionary
+    tailored specifically for each of the 7 supported Pilates and Fitness exercises.
+    """
+    l_conf = (user_scores[11] + user_scores[13] + user_scores[15]) / 3.0
+    r_conf = (user_scores[12] + user_scores[14] + user_scores[16]) / 3.0
+    
+    # Bilateral knees and hips
+    l_knee = calculate_angle(user_kpts[11], user_kpts[13], user_kpts[15])
+    r_knee = calculate_angle(user_kpts[12], user_kpts[14], user_kpts[16])
+    l_hip = calculate_angle(user_kpts[5], user_kpts[11], user_kpts[13])
+    r_hip = calculate_angle(user_kpts[6], user_kpts[12], user_kpts[14])
+    
+    # Torso lean calculation
+    shoulder_mid = (user_kpts[5] + user_kpts[6]) / 2.0
+    hip_mid = (user_kpts[11] + user_kpts[12]) / 2.0
+    ankle_mid = (user_kpts[15] + user_kpts[16]) / 2.0
+    torso_dx = shoulder_mid[0] - hip_mid[0]
+    torso_dy = hip_mid[1] - shoulder_mid[1]
+    torso_lean = float(np.degrees(np.arctan2(torso_dy, abs(torso_dx) + 1e-5)))
+
+    angles = {
+        "left_knee_angle": l_knee, "right_knee_angle": r_knee,
+        "left_hip_angle": l_hip, "right_hip_angle": r_hip,
+        "torso_angle": torso_lean,
+        "knee_distance": float(np.linalg.norm(user_kpts[13] - user_kpts[14])),
+        "ankle_distance": float(np.linalg.norm(user_kpts[15] - user_kpts[16]))
+    }
+
+    ex = exercise_name.lower()
+    primary_angle = 180.0
+
+    if ex == "squat":
+        # Prioritize clearer side or lower knee
+        primary_angle = l_knee if l_conf > r_conf else r_knee
+        angles["knee_angle"] = primary_angle
+        angles["hip_angle"] = l_hip if l_conf > r_conf else r_hip
+
+    elif ex == "forward_lunge":
+        # In lunge, front knee is the one bent lower (smaller angle)
+        primary_angle = min(l_knee, r_knee)
+        angles["front_knee_angle"] = primary_angle
+        angles["knee_angle"] = primary_angle
+
+    elif ex == "glute_bridge":
+        # In glute bridge, primary angle is hip extension (shoulder-hip-knee)
+        primary_angle = max(l_hip, r_hip)
+        angles["hip_angle"] = primary_angle
+        angles["knee_angle"] = min(l_knee, r_knee)
+
+    elif ex == "forearm_plank":
+        # In plank, body line is angle formed by shoulder - hip - ankle
+        body_line = calculate_angle(shoulder_mid, hip_mid, ankle_mid)
+        primary_angle = body_line
+        angles["body_line_angle"] = body_line
+        angles["spine_alignment"] = body_line
+
+    elif ex == "pilates_hundred":
+        # In hundred, legs elevated at ~45 deg, chest lifted
+        leg_vec = ankle_mid - hip_mid
+        leg_elev = float(np.degrees(np.arctan2(abs(leg_vec[1]), abs(leg_vec[0]) + 1e-5)))
+        chest_lift = max(10.0, 90.0 - torso_lean)
+        primary_angle = leg_elev
+        angles["leg_elevation_angle"] = leg_elev
+        angles["chest_lift_angle"] = chest_lift
+
+    elif ex == "bird_dog":
+        # In bird dog, limb extension is measured by opposite arm/leg alignment
+        wrist_mid = (user_kpts[9] + user_kpts[10]) / 2.0
+        limb_ext = calculate_angle(wrist_mid, shoulder_mid, hip_mid)
+        primary_angle = limb_ext
+        angles["limb_extension"] = limb_ext
+
+    elif ex == "side_leg_raise":
+        # In side leg raise, hip abduction is angle between left and right femur vectors
+        v_l = user_kpts[13] - user_kpts[11]
+        v_r = user_kpts[14] - user_kpts[12]
+        cos_ab = np.dot(v_l, v_r) / (np.linalg.norm(v_l) * np.linalg.norm(v_r) + 1e-5)
+        abduction = float(np.degrees(np.arccos(np.clip(cos_ab, -1.0, 1.0))))
+        primary_angle = abduction
+        angles["hip_abduction"] = abduction
+
+    else:
+        primary_angle = l_knee if l_conf > r_conf else r_knee
+        angles["knee_angle"] = primary_angle
+
+    return primary_angle, angles
+
 def select_primary_user(keypoints, scores, frame_w, frame_h, prev_center=None, kpt_thr=0.25):
     """
     Intelligently selects and locks onto the primary workout user when multiple people are detected.
@@ -273,68 +362,41 @@ def run_ai_coach(source=0, exercise="squat", mode="balanced", device="cpu", kpt_
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 127), 2)
                 cv2.circle(vis_frame, (nose_x, nose_y), 6, (0, 255, 127), -1)
 
-            # Calculate joint angles directly from user keypoints
-            l_conf = (user_scores[11] + user_scores[13] + user_scores[15]) / 3.0
-            r_conf = (user_scores[12] + user_scores[14] + user_scores[16]) / 3.0
+            # Calculate joint angles dynamically based on the current exercise (7 Exercises Supported)
+            raw_primary_angle, angles_dict = extract_exercise_angles(exercise, user_kpts, user_scores)
 
-            if l_conf > r_conf and l_conf > 0.15:
-                raw_knee = calculate_angle(user_kpts[11], user_kpts[13], user_kpts[15])
-                raw_hip = calculate_angle(user_kpts[5], user_kpts[11], user_kpts[13])
-            elif r_conf > 0.15:
-                raw_knee = calculate_angle(user_kpts[12], user_kpts[14], user_kpts[16])
-                raw_hip = calculate_angle(user_kpts[6], user_kpts[12], user_kpts[14])
-            else:
-                raw_knee, raw_hip = 180.0, 180.0
-
-            # Step 1: Smooth knee angle
-            smooth_knee = angle_filter.update(raw_knee, curr_time)
-            current_angle = smooth_knee
+            # Step 1: Smooth primary tracking angle
+            smooth_primary_angle = angle_filter.update(raw_primary_angle, curr_time)
+            current_angle = smooth_primary_angle
 
             # Step 2: FSM Rep Counter / Timer
             ex_cfg = EXERCISE_CONFIGS.get(exercise.lower(), {})
-            if ex_cfg.get("type") == "REPETITION":
-                state, reps, meta = rep_fsm.update(smooth_knee, curr_time)
+            if ex_cfg.get('type') == 'REPETITION':
+                state, reps, meta = rep_fsm.update(smooth_primary_angle, curr_time)
                 state_text = state.value
-                if meta.get("is_seated"):
-                    state_text = "RESTING"
-                    metric_display = f"REPS: {reps} [NGHI]"
+                if meta.get('is_seated'):
+                    state_text = 'RESTING'
+                    metric_display = f'REPS: {reps} [NGHI]'
                 else:
-                    metric_display = f"REPS: {reps} ({int(smooth_knee)} deg)"
+                    metric_display = f'REPS: {reps} ({int(smooth_primary_angle)} deg)'
 
-                # Trigger encouraging studio voice when rep finishes
-                if meta.get("rep_completed"):
+                if meta.get('rep_completed'):
                     feedback_engine.notify_rep_completed(reps, curr_time)
             else:
-                # Isometric hold (e.g. Plank)
                 hold_sec = hold_timer.update(is_form_valid, curr_time)
-                state_text = "HOLDING" if hold_timer.is_holding else "PAUSED"
-                metric_display = f"TIME: {int(hold_sec)}s"
+                state_text = 'HOLDING' if hold_timer.is_holding else 'PAUSED'
+                metric_display = f'TIME: {int(hold_sec)}s'
 
             # Step 3: Biomechanical Form Evaluation (Phase-Aware)
-            shoulder_mid = (user_kpts[5] + user_kpts[6]) / 2.0
-            hip_mid = (user_kpts[11] + user_kpts[12]) / 2.0
-            torso_dx = shoulder_mid[0] - hip_mid[0]
-            torso_dy = hip_mid[1] - shoulder_mid[1]
-            torso_lean = float(np.degrees(np.arctan2(torso_dy, abs(torso_dx) + 1e-5)))
+            angles_dict['depth_error'] = meta.get('depth_error', False) if 'meta' in locals() else False
+            angles_dict['lowest_knee_angle'] = meta.get('lowest_angle', smooth_primary_angle) if 'meta' in locals() else smooth_primary_angle
 
-            angles_dict = {
-                "knee_angle": smooth_knee,
-                "lowest_knee_angle": meta.get("lowest_angle", smooth_knee),
-                "depth_error": meta.get("depth_error", False),
-                "hip_angle": raw_hip,
-                "torso_angle": torso_lean,
-                "knee_distance": np.linalg.norm(user_kpts[13] - user_kpts[14]),
-                "ankle_distance": np.linalg.norm(user_kpts[15] - user_kpts[16])
-            }
-            
-            # If user is resting/seated, suppress posture errors
-            if meta.get("is_seated"):
+            if 'meta' in locals() and meta.get('is_seated'):
                 is_form_valid = True
                 error_msgs = []
                 form_score = 100
             else:
                 is_form_valid, error_msgs, form_score = evaluate_form_rules(exercise, angles_dict, phase=state_text)
-
             # Step 4: Multi-label AI Model Prediction (only active during movement)
             if ai_classifier.is_loaded and state_text in ["BOTTOM", "ASCENDING"]:
                 feature_row = np.array([
@@ -357,7 +419,9 @@ def run_ai_coach(source=0, exercise="squat", mode="balanced", device="cpu", kpt_
 
         cv2.imshow("Pilates AI Pose Coach - Real-Time Alignment HUD", vis_frame)
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
+        if key in [ord('q'), ord('Q'), 27]:  # 'q', 'Q' or ESC
+            break
+        if cv2.getWindowProperty("Pilates AI Pose Coach - Real-Time Alignment HUD", cv2.WND_PROP_VISIBLE) < 1:
             break
         # Hotkeys 1-7 to switch exercises dynamically without restarting
         elif key == ord('1') and exercise != "squat":

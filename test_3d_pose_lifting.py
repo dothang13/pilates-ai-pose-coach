@@ -491,6 +491,17 @@ class Pose3DVisualizer:
         self.ax.set_box_aspect((1, 1, 1))
 
         self.lines = []
+        self.closed = False
+
+        def on_close(event):
+            self.closed = True
+
+        def on_key(event):
+            if event.key in ['q', 'Q', 'escape']:
+                self.closed = True
+
+        self.fig.canvas.mpl_connect('close_event', on_close)
+        self.fig.canvas.mpl_connect('key_press_event', on_key)
 
         for _ in H36M_EDGES:
             line, = self.ax.plot(
@@ -797,7 +808,15 @@ def main():
                 vis_frame
             )
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            if visualizer.closed:
+                break
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in [ord("q"), ord("Q"), 27]:  # 'q', 'Q' or ESC
+                break
+
+            # Check if OpenCV window was closed via [X] button
+            if cv2.getWindowProperty("VideoPose3D Standalone Test", cv2.WND_PROP_VISIBLE) < 1:
                 break
 
     finally:
