@@ -700,7 +700,10 @@ def main():
 
             key = cv2.waitKey(1) & 0xFF
 
-            if key in (ord("q"), 27):
+            if key in (ord("q"), ord("Q"), 27):
+                break
+
+            if cv2.getWindowProperty("Pilates AI Coach | 2D + Live 3D", cv2.WND_PROP_VISIBLE) < 1:
                 break
 
             elif key == ord("a"):
